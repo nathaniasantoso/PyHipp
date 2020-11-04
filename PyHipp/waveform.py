@@ -1,9 +1,13 @@
 import DataProcessingTools as DPT
 import matplotlib.pyplot as plt
+#import PanGUI
+#import PyHipp
 
 import hickle as hkl
 import os
 import numpy as np
+
+from PyHipp.misc import getChannelInArray
 
 class Waveform(DPT.DPObject):
     # Please change the class name according to your needs
@@ -13,7 +17,30 @@ class Waveform(DPT.DPObject):
 
     def __init__(self, *args, **kwargs):
         DPT.DPObject.__init__(self, *args, **kwargs)
-
+        
+    def plot_data(self, i, ax, plotOpts, isCorner):
+        y = self.data[i]
+        x = np.arange(y.shape[0])
+        ax.plot(x, y)
+    
+        if not plotOpts['TitleOff'] or isCorner:
+            dir_names = self.dirs[i].split('/')
+            #ax.set_title(dir_names[1] + ' ' + dir_names[3] + ' ' + dir_names[4], fontsize=7)
+            ax.set_title(self.dirs[i])
+            #fig.suptitle(self.dirs[i])
+                    
+        if (not plotOpts['LabelsOff']) or isCorner:
+            ax.set_xlabel('Time (sample unit)')
+            ax.set_ylabel('Voltage (uV)')
+    
+        if plotOpts['TicksOff'] or (not isCorner):
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+        
+    def remove_subplots(self, fig):
+        for x in fig.get_axes():  # remove all axes in current figure
+            x.remove()
+            
     def create(self, *args, **kwargs):
         # this function will be called once to create this waveform object
         
@@ -46,6 +73,8 @@ class Waveform(DPT.DPObject):
         # ..................code...................
         # .........................................
         
+        # check on the mountainsort template data and create a DPT object accordingly
+        # Example:
         pwd = os.path.normpath(os.getcwd());
         # 'channelxxx, xxx is the number of the channel'
         self.channel_filename = [os.path.basename(pwd)]  
@@ -55,25 +84,35 @@ class Waveform(DPT.DPObject):
         templates = hkl.load(template_filename)
         self.data = [np.squeeze(templates)]
         
-        # check on the mountainsort template data and create a DPT object accordingly
-        # Example:
+        aname = DPT.levels.normpath(os.path.dirname(pwd))
         
-        if not self.data is None:
+        self.array_dict = dict()
+        self.array_dict[aname] = 0
+
+        self.numSets = 1
+        self.current_plot_type = None
+
+        if self.data!=[]:
             # create object if data is not empty
             DPT.DPObject.create(self, *args, **kwargs)
         else:
             # create empty object if data is empty
-            DPT.DPObject.create(self, dirs=[], *args, **kwargs)
-        
+            DPT.DPObject.create(self, dirs=[], *args, **kwargs)            
         
     def append(self, wf):
         # this function will be called by processDirs to append the values of certain fields
         # from an extra object (wf) to this object
         # It is useful to store the information of the objects for panning through in the future
+        
         DPT.DPObject.append(self, wf)  # append self.setidx and self.dirs
+        
         # .........................................
         # ..................code...................
         # .........................................
+        self.data = self.data + wf.data
+        for ar in wf.array_dict:
+            self.array_dict[ar] = self.numSets
+        self.numSets += 1
         
     def plot(self, i = None, ax = None, getNumEvents = False, getLevels = False,\
              getPlotOpts = False, overlay = False, **kwargs):
@@ -90,17 +129,20 @@ class Waveform(DPT.DPObject):
         # in the menu evoked by right-clicking on the axis after the window is created by PanGUI.create_window
         # for more information, please check in PanGUI.main.create_menu
         plotOpts = {'PlotType': DPT.objects.ExclusiveOptions(['Channel', 'Array'], 0), \
-            'LabelsOff': False, 'TitleOff': False}
+            'LabelsOff': False, 'TitleOff': False, 'TicksOff': False}
 
         # update the plotOpts based on kwargs, these two lines are important to
         # receive the input arguments and act accordingly
         for (k, v) in plotOpts.items():
-                    plotOpts[k] = kwargs.get(k, v)  
+            plotOpts[k] = kwargs.get(k, v)  
                     
         plot_type = plotOpts['PlotType'].selected()  # this variable will store the selected item in 'Type'
 
         if getPlotOpts:  # this will be called by PanGUI.main to obtain the plotOpts to create a menu once we right-click on the axis
             return plotOpts 
+        
+        if self.current_plot_type is None:
+            self.current_plot_type = plot_type
 
         if getNumEvents:  
             # this will be called by PanGUI.main to return two values: 
@@ -109,43 +151,74 @@ class Waveform(DPT.DPObject):
             # .........................................
             # ..................code...................
             # .........................................
-            
-            return  # please return two items here: <total-number-of-items-to-plot>, <current-item-index-to-plot>
+            if self.current_plot_type == plot_type:
+                if plot_type == 'Channel':
+                    return self.numSets, i
+                elif plot_type == 'Array':
+                    return len(self.array_dict), i
+            elif self.current_plot_type == 'Array' and plot_type == 'Channel':  # change from array to channel
                 
+                if i == 0:
+                    return self.numSets, 0
+                else:
+					# get values in array_dict
+                    advals = np.array([*self.array_dict.values()])
+                    return self.numSets, advals[i-1]+1
+                
+            elif self.current_plot_type == 'Channel' and plot_type == 'Array':  # change from channel to array
+				# get values in array_dict
+                self.current_plot_type = 'Array'
+                
+                advals = np.array([*self.array_dict.values()])
+				# find index that is larger than i
+                vi = (advals >= i).nonzero()
+                return len(self.array_dict), vi[0][0]
+        
         if ax is None:
             ax = plt.gca()
 
         if not overlay:
             ax.clear()
-        
+
         ######################################################################
         #################### start plotting ##################################
         ######################################################################
-        if plot_type == 'Channel':  # plot in channel level
-            # plot the mountainsort data according to the current index 'i'
-            # .........................................
-            # ..................code...................
-            # .........................................
-            pass  # you may delete this line
-    
-        ########labels###############
-        if not plotOpts['TitleOff']:  # if TitleOff icon in the right-click menu is clicked
-            # set the title in this format: channelxxx, fill with zeros if the channel number is not three-digit
-            # .........................................
-            # ..................codes..................
-            # .........................................
-            pass  # you may delete this line
+        
+        # get the parent figure of the ax
+        if plot_type == 'Channel':
+            if self.current_plot_type == 'Array':
+                fig = ax.figure 
+                self.remove_subplots(fig)
+                ax = fig.add_subplot(1,1,1)
+            self.plot_data(i, ax, plotOpts, 1)
+            self.current_plot_type = 'Channel'
             
-        if not plotOpts['LabelsOff']:  # if LabelsOff icon in the right-click menu is clicked
-            # set the xlabel and ylabel
-            # .........................................
-            # ..................code...................
-            # .........................................
-            pass  # you may delete this line
-            
-        return ax
-    
-    
+        elif plot_type == 'Array':
+            fig = ax.figure 
+            self.remove_subplots(fig)
+            advals = np.array([*self.array_dict.values()])
+            # set the starting index cstart for array i
+            # set the ending index cend for array i
+            if i == 0:
+                cstart = 0
+                cend = advals[0]
+            else:
+                cstart = advals[i-1] + 1
+                cend = advals[i]
+
+            currch = cstart
+            while currch <= cend :
+                # get channel name
+                currchname = self.dirs[currch]
+                
+                plotOpts['LabelsOff'] = True
+                plotOpts['TitleOff'] = True
+                # get axis position for channel
+                ax, isCorner = getChannelInArray(currchname, fig)
+                self.plot_data(currch, ax, plotOpts, isCorner)
+                currch += 1
+            self.current_plot_type = 'Array'
+
     
     #%% helper functions        
     # Please make use of the properties of the OOP to call and edit the field-value
@@ -153,6 +226,6 @@ class Waveform(DPT.DPObject):
     # This will greatly increase the efficiency in maintaining the codes,
     # especially for those lines that are used for multiple times in multiple places.
     # Other than that, this will also greatly increase the readability of the code
-        
-        
+
+
     
